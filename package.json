@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-tikzjax",
-	"version": "0.5.2",
-	"description": "Render LaTeX and TikZ diagrams in your notes",
+	"name": "obsidian-tikzjax-wskorng",
+	"version": "0.5.2-wskorng",
+	"description": "Render LaTeX and TikZ diagrams in your notes with custom preamble",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
@@ -9,7 +9,7 @@
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
 	"keywords": [],
-	"author": "",
+	"author": "wskorng",
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^16.11.6",
