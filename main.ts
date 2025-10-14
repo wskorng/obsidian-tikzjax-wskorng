@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceWindow } from 'obsidian';
+import { Plugin, TFile, WorkspaceWindow } from 'obsidian';
 import { TikzjaxPluginSettings, DEFAULT_SETTINGS, TikzjaxSettingTab } from "./settings";
 import { optimize } from "./svgo.browser";
 
@@ -94,21 +94,16 @@ export default class TikzjaxPlugin extends Plugin {
 
 	registerTikzCodeBlock() {
 		this.registerMarkdownCodeBlockProcessor("tikz", async (source, el, ctx) => {
-			console.log("TikZJax-wskorng: Processing tikz block");
-			console.log("Source path:", ctx.sourcePath);
-			
+			// The embedding should precede the creation of the script element,
+			// otherwise the MutationObserver of tikzjax.js may not notice the change of the element.
+			// And I don’t know why. -- Zhewen Mo
+			let sourceComplete = await this.embedTexInput(source);
+
 			const script = el.createEl("script");
 
 			script.setAttribute("type", "text/tikz");
 			script.setAttribute("data-show-console", "true");
-
-			const preamble = await this.findPreambleFile(ctx.sourcePath);
-			console.log("Found preamble:", preamble ? `${preamble.length} characters` : "none");
-			
-			const finalSource = this.tidyTikzSource(source, preamble);
-			console.log("Final TikZ source:", finalSource);
-			
-			script.setText(finalSource);
+			script.setText(this.tidyTikzSource(sourceComplete));
 		});
 	}
 
@@ -123,51 +118,27 @@ export default class TikzjaxPlugin extends Plugin {
 		window.CodeMirror.modeInfo = window.CodeMirror.modeInfo.filter(el => el.name != "Tikz");
 	}
 
-	async findPreambleFile(sourcePath: string): Promise<string> {
-		if (!sourcePath) {
-			console.log("TikZJax-wskorng: No source path provided");
-			return "";
-		}
-		
-		console.log("TikZJax-wskorng: Searching for preamble file from:", sourcePath);
-		
-		// Split path into parts and work backwards
-		const pathParts = sourcePath.split('/');
-		
-		// Try multiple filename patterns in order of preference
-		const preambleFilenames = ['.tikz-preamble.tex', '.tikz-preamble', 'tikz-preamble.tex'];
-		
-		for (let i = pathParts.length - 1; i >= 0; i--) {
-			const currentPath = pathParts.slice(0, i).join('/');
-			
-			for (const filename of preambleFilenames) {
-				const preamblePath = currentPath ? `${currentPath}/${filename}` : filename;
-				console.log("TikZJax-wskorng: Checking path:", preamblePath);
-				
-				try {
-					// @ts-ignore - this.app is available in Plugin class
-					const file = this.app.vault.getAbstractFileByPath(preamblePath);
-					console.log("TikZJax-wskorng: File found:", !!file);
-					
-					// @ts-ignore - TFile type check
-					if (file && file instanceof this.app.vault.TFile) {
-						console.log("TikZJax-wskorng: Reading file:", preamblePath);
-						// @ts-ignore - vault.read method
-						const content = await this.app.vault.read(file);
-						console.log("TikZJax-wskorng: Preamble content loaded:", content.substring(0, 100) + "...");
-						return content;
-					}
-				} catch (error) {
-					console.log("TikZJax-wskorng: Error reading file:", preamblePath, error);
-				}
-			}
-		}
-		
-		console.log("TikZJax-wskorng: No preamble file found");
-		return "";
+	// Inspired by Chris Morgan's answer in https://stackoverflow.com/questions/33631041/javascript-async-await-in-replace
+	async replaceAsync(string: string, regexp: RegExp, replacer: (...args: any[]) => Promise<string>): Promise<string> {
+		const replacements = await Promise.all(
+			Array.from(string.matchAll(regexp),
+				match => replacer(...match)));
+		let i = 0;
+		return string.replace(regexp, () => replacements[i++]);
 	}
 
-	tidyTikzSource(tikzSource: string, preamble: string = "") {
+	async embedTexInput(tikzSource: string): Promise<string> {
+		return this.replaceAsync(tikzSource, /^%:input\s+(.+)$/gm, async (_, path) => {
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (file instanceof TFile) {
+				return await this.app.vault.cachedRead(file);
+			} else {
+				return "";
+			}
+		});
+	}
+
+	tidyTikzSource(tikzSource: string) {
 
 		// Remove non-breaking space characters, otherwise we get errors
 		const remove = "&nbsp;";
@@ -182,11 +153,6 @@ export default class TikzjaxPlugin extends Plugin {
 		// Remove empty lines
 		lines = lines.filter(line => line);
 
-		// Insert preamble if available
-		if (preamble.trim()) {
-			const preambleLines = preamble.trim().split("\n");
-			lines = [...preambleLines, ...lines];
-		}
 
 		return lines.join("\n");
 	}
@@ -241,4 +207,3 @@ export default class TikzjaxPlugin extends Plugin {
 		svgEl.outerHTML = svg;
 	}
 }
-
