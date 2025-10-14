@@ -94,16 +94,16 @@ export default class TikzjaxPlugin extends Plugin {
 
 	registerTikzCodeBlock() {
 		this.registerMarkdownCodeBlockProcessor("tikz", async (source, el, ctx) => {
-			// The embedding should precede the creation of the script element,
+			// The preamble processing should precede the creation of the script element,
 			// otherwise the MutationObserver of tikzjax.js may not notice the change of the element.
-			// And I don’t know why. -- Zhewen Mo
-			let sourceComplete = await this.embedTexInput(source);
+			const preamble = await this.findPreambleFile(ctx.sourcePath);
+			const sourceComplete = this.tidyTikzSource(source, preamble);
 
 			const script = el.createEl("script");
 
 			script.setAttribute("type", "text/tikz");
 			script.setAttribute("data-show-console", "true");
-			script.setText(this.tidyTikzSource(sourceComplete));
+			script.setText(sourceComplete);
 		});
 	}
 
@@ -118,32 +118,74 @@ export default class TikzjaxPlugin extends Plugin {
 		window.CodeMirror.modeInfo = window.CodeMirror.modeInfo.filter(el => el.name != "Tikz");
 	}
 
-	// Inspired by Chris Morgan's answer in https://stackoverflow.com/questions/33631041/javascript-async-await-in-replace
-	async replaceAsync(string: string, regexp: RegExp, replacer: (...args: any[]) => Promise<string>): Promise<string> {
-		const replacements = await Promise.all(
-			Array.from(string.matchAll(regexp),
-				match => replacer(...match)));
-		let i = 0;
-		return string.replace(regexp, () => replacements[i++]);
-	}
 
-	async embedTexInput(tikzSource: string): Promise<string> {
-		return this.replaceAsync(tikzSource, /^%:input\s+(.+)$/gm, async (_, path) => {
-			const file = this.app.vault.getAbstractFileByPath(path);
-			if (file instanceof TFile) {
-				return await this.app.vault.cachedRead(file);
-			} else {
-				return "";
+	async findPreambleFile(sourcePath: string): Promise<string> {
+		if (!sourcePath) {
+			console.log("TikZJax-wskorng: No source path provided");
+			return "";
+		}
+		
+		console.log("TikZJax-wskorng: Searching for preamble file from:", sourcePath);
+		
+		// Get the directory of the current file
+		let currentDir = sourcePath.includes('/') ? sourcePath.substring(0, sourcePath.lastIndexOf('/')) : '';
+		console.log("TikZJax-wskorng: Starting directory:", currentDir);
+		
+		// Try multiple filename patterns in order of preference
+		const preambleFilenames = ['.tikz-preamble.tex', '.tikz-preamble', 'tikz-preamble.tex'];
+		
+		// Search from current directory up to vault root
+		let searchCount = 0;
+		
+		while (searchCount < 10) { // Safety limit
+			searchCount++;
+			console.log(`TikZJax-wskorng: Search iteration ${searchCount}, current dir: "${currentDir}"`);
+			
+			for (const filename of preambleFilenames) {
+				const preamblePath = currentDir ? `${currentDir}/${filename}` : filename;
+				console.log("TikZJax-wskorng: Checking path:", preamblePath);
+				
+				try {
+					const file = this.app.vault.getAbstractFileByPath(preamblePath);
+					console.log("TikZJax-wskorng: File found:", !!file);
+					
+					if (file instanceof TFile) {
+						console.log("TikZJax-wskorng: Reading preamble from:", preamblePath);
+						const content = await this.app.vault.cachedRead(file);
+						return content;
+					}
+				} catch (error) {
+					console.log("TikZJax-wskorng: Error accessing file:", preamblePath, error);
+				}
 			}
-		});
+			
+			// If we're at the root (empty string), we're done
+			if (!currentDir) {
+				console.log("TikZJax-wskorng: Reached vault root, stopping search");
+				break;
+			}
+			
+			// Move to parent directory
+			if (currentDir.includes('/')) {
+				const parentDir = currentDir.substring(0, currentDir.lastIndexOf('/'));
+				console.log(`TikZJax-wskorng: Moving from "${currentDir}" to parent "${parentDir}"`);
+				currentDir = parentDir;
+			} else {
+				// We're one level below root, next iteration will be root (empty string)
+				console.log(`TikZJax-wskorng: Moving from "${currentDir}" to vault root`);
+				currentDir = '';
+			}
+		}
+		
+		console.log("TikZJax-wskorng: No preamble file found after searching", searchCount, "directories");
+		return "";
 	}
 
-	tidyTikzSource(tikzSource: string) {
+	tidyTikzSource(tikzSource: string, preamble: string = "") {
 
 		// Remove non-breaking space characters, otherwise we get errors
 		const remove = "&nbsp;";
 		tikzSource = tikzSource.replaceAll(remove, "");
-
 
 		let lines = tikzSource.split("\n");
 
@@ -153,6 +195,21 @@ export default class TikzjaxPlugin extends Plugin {
 		// Remove empty lines
 		lines = lines.filter(line => line);
 
+		// Insert preamble if available - but only before \begin{document}
+		if (preamble.trim()) {
+			const preambleLines = preamble.trim().split("\n").map(line => line.trim()).filter(line => line);
+			
+			// Find the position of \begin{document}
+			const documentIndex = lines.findIndex(line => line.includes('\\begin{document}'));
+			
+			if (documentIndex !== -1) {
+				// Insert preamble before \begin{document}
+				lines.splice(documentIndex, 0, ...preambleLines);
+			} else {
+				// If no \begin{document} found, add preamble at the beginning
+				lines = [...preambleLines, ...lines];
+			}
+		}
 
 		return lines.join("\n");
 	}
