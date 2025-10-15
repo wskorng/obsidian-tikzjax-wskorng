@@ -8,10 +8,18 @@ import tikzjaxJs from 'inline:./tikzjax.js';
 
 export default class TikzjaxPlugin extends Plugin {
 	settings: TikzjaxPluginSettings;
+	originalConsoleLog: typeof console.log;
+	originalConsoleError: typeof console.error;
+	tikzLogBuffer: string[] = [];
+	tikzLogTimer: NodeJS.Timeout | null = null;
+	currentTikzElement: HTMLElement | null = null;
 
 	async onload() {
 		await this.loadSettings();
 		this.addSettingTab(new TikzjaxSettingTab(this.app, this));
+
+		// Start console interception for TikZJax error monitoring
+		this.startConsoleInterception();
 
 		// Support pop-out windows
 		this.app.workspace.onLayoutReady(() => {
@@ -21,7 +29,6 @@ export default class TikzjaxPlugin extends Plugin {
 			}));
 		});
 
-
 		this.addSyntaxHighlighting();
 		
 		this.registerTikzCodeBlock();
@@ -30,6 +37,7 @@ export default class TikzjaxPlugin extends Plugin {
 	onunload() {
 		this.unloadTikZJaxAllWindows();
 		this.removeSyntaxHighlighting();
+		this.stopConsoleInterception();
 	}
 
 	async loadSettings() {
@@ -94,6 +102,18 @@ export default class TikzjaxPlugin extends Plugin {
 
 	registerTikzCodeBlock() {
 		this.registerMarkdownCodeBlockProcessor("tikz", async (source, el, ctx) => {
+			// Clear log buffer when processing new TikZ code
+			this.clearLogBuffer();
+			
+			// Store current element for error display
+			this.currentTikzElement = el;
+			
+			// Clear any existing error display in this element
+			const existingError = el.querySelector('.tikz-error-display');
+			if (existingError) {
+				existingError.remove();
+			}
+			
 			// The preamble processing should precede the creation of the script element,
 			// otherwise the MutationObserver of tikzjax.js may not notice the change of the element.
 			const preamble = await this.findPreambleFile(ctx.sourcePath);
@@ -121,15 +141,11 @@ export default class TikzjaxPlugin extends Plugin {
 
 	async findPreambleFile(sourcePath: string): Promise<string> {
 		if (!sourcePath) {
-			console.log("TikZJax-wskorng: No source path provided");
 			return "";
 		}
 		
-		console.log("TikZJax-wskorng: Searching for preamble file from:", sourcePath);
-		
 		// Get the directory of the current file
 		let currentDir = sourcePath.includes('/') ? sourcePath.substring(0, sourcePath.lastIndexOf('/')) : '';
-		console.log("TikZJax-wskorng: Starting directory:", currentDir);
 		
 		// Try multiple filename patterns in order of preference
 		const preambleFilenames = ['.tikz-preamble.tex', '.tikz-preamble', 'tikz-preamble.tex'];
@@ -139,45 +155,37 @@ export default class TikzjaxPlugin extends Plugin {
 		
 		while (searchCount < 10) { // Safety limit
 			searchCount++;
-			console.log(`TikZJax-wskorng: Search iteration ${searchCount}, current dir: "${currentDir}"`);
 			
 			for (const filename of preambleFilenames) {
 				const preamblePath = currentDir ? `${currentDir}/${filename}` : filename;
-				console.log("TikZJax-wskorng: Checking path:", preamblePath);
 				
 				try {
 					const file = this.app.vault.getAbstractFileByPath(preamblePath);
-					console.log("TikZJax-wskorng: File found:", !!file);
 					
 					if (file instanceof TFile) {
-						console.log("TikZJax-wskorng: Reading preamble from:", preamblePath);
 						const content = await this.app.vault.cachedRead(file);
 						return content;
 					}
 				} catch (error) {
-					console.log("TikZJax-wskorng: Error accessing file:", preamblePath, error);
+					// File doesn't exist or can't be read, continue searching
 				}
 			}
 			
 			// If we're at the root (empty string), we're done
 			if (!currentDir) {
-				console.log("TikZJax-wskorng: Reached vault root, stopping search");
 				break;
 			}
 			
 			// Move to parent directory
 			if (currentDir.includes('/')) {
 				const parentDir = currentDir.substring(0, currentDir.lastIndexOf('/'));
-				console.log(`TikZJax-wskorng: Moving from "${currentDir}" to parent "${parentDir}"`);
 				currentDir = parentDir;
 			} else {
 				// We're one level below root, next iteration will be root (empty string)
-				console.log(`TikZJax-wskorng: Moving from "${currentDir}" to vault root`);
 				currentDir = '';
 			}
 		}
 		
-		console.log("TikZJax-wskorng: No preamble file found after searching", searchCount, "directories");
 		return "";
 	}
 
@@ -263,4 +271,176 @@ export default class TikzjaxPlugin extends Plugin {
 
 		svgEl.outerHTML = svg;
 	}
+
+	startConsoleInterception() {
+		// Store original console methods
+		this.originalConsoleLog = console.log;
+		this.originalConsoleError = console.error;
+
+		// Override console.log to intercept TikZJax messages
+		console.log = (...args: any[]) => {
+			// Call original console.log first
+			this.originalConsoleLog.apply(console, args);
+			
+			// Check for TikZJax error patterns
+			const message = args.join(' ');
+			this.checkForTikzError(message);
+		};
+
+		// Override console.error to intercept TikZJax errors
+		console.error = (...args: any[]) => {
+			// Call original console.error first
+			this.originalConsoleError.apply(console, args);
+			
+			// Check for TikZJax error patterns
+			const message = args.join(' ');
+			this.checkForTikzError(message, true);
+		};
+	}
+
+	stopConsoleInterception() {
+		// Restore original console methods
+		if (this.originalConsoleLog) {
+			console.log = this.originalConsoleLog;
+		}
+		if (this.originalConsoleError) {
+			console.error = this.originalConsoleError;
+		}
+	}
+
+	checkForTikzError(message: string, isError: boolean = false) {
+		// Capture all console messages during TikZ processing
+		// Add message to buffer
+		this.tikzLogBuffer.push(message);
+		
+		// Reset timer - we'll wait for messages to stop coming
+		if (this.tikzLogTimer) {
+			clearTimeout(this.tikzLogTimer);
+		}
+		
+		// Set timer to show notification after 1 second of no new messages
+		this.tikzLogTimer = setTimeout(() => {
+			this.showBufferedLogs();
+		}, 1000);
+	}
+
+	showBufferedLogs() {
+		if (this.tikzLogBuffer.length === 0 || !this.currentTikzElement) return;
+		
+		// LaTeX processing state management
+		type LogState = 'preamble_normal' | 'preamble_error' | 'document_normal' | 'document_error';
+		let state: LogState = 'preamble_normal';
+		const filteredMessages: string[] = [];
+		let errorPhase: 'preamble' | 'document' | null = null;
+		
+		for (const message of this.tikzLogBuffer) {
+			const trimmed = message.trim();
+			
+			if (state === 'preamble_normal') {
+				// Check if this should be skipped (normal preamble patterns)
+				const shouldSkip = (
+					// Skip normal library loading messages
+					(/^[\s\(\)\"]*[\w\-\.]+\.(?:tex|sty|code\.tex)/.test(trimmed) && !/^!/.test(trimmed)) ||
+					// Skip version info and normal startup messages
+					/^This is e-TeX|^LaTeX2e|^\*\*entering extended mode|^\(input\.tex$|^For additional information/.test(trimmed) ||
+					// Skip empty lines or lines with only spaces/dots
+					/^\s*\.{3,}\s*$|^\s*$/.test(trimmed)
+				);
+				
+				if (shouldSkip) {
+					continue; // Skip this message
+				}
+				
+				// Not skipped - determine next state
+				const isNormalDocument = (
+					/^No file input\.aux\./.test(trimmed) ||
+					/^ABD:/.test(trimmed) ||
+					/^\("input\.aux"\)/.test(trimmed)
+				);
+				if (isNormalDocument) {
+					state = 'document_normal';
+					continue;
+				} else {
+					state = 'preamble_error';
+					if (!errorPhase) errorPhase = 'preamble';
+				}
+			} else if (state === 'document_normal') {
+				// Check if this is still normal document processing
+				const isNormalDocument = (
+					/^No file input\.aux\./.test(trimmed) ||
+					/^ABD:/.test(trimmed) ||
+					/^\("input\.aux"\)/.test(trimmed)
+				);
+				if (isNormalDocument) {
+					continue;
+				} else {
+					state = 'document_error';
+					if (!errorPhase) errorPhase = 'document';
+				}
+			}
+			
+			// Add message if we're in any error state or past normal processing
+			if (state === 'preamble_error' || state === 'document_error') {
+				filteredMessages.push(message);
+			}
+		}
+		
+		// If no error messages, don't show anything
+		if (filteredMessages.length === 0) return;
+		
+		// Join filtered messages
+		const allMessages = filteredMessages.join('\n');
+		
+		// Create error display element directly in the TikZ code block
+		const errorDisplay = this.currentTikzElement.createDiv({
+			cls: "tikz-error-display"
+		});
+		
+		// Add title based on error phase
+		const titleText = errorPhase === 'preamble' 
+			? "LaTeX Preamble Error (before \\begin{document})"
+			: errorPhase === 'document'
+			? "LaTeX Document Error (after \\begin{document})"
+			: "TikZJax Log";
+			
+		const title = errorDisplay.createEl("div", { 
+			text: titleText,
+			cls: "tikz-error-title"
+		});
+		title.style.fontWeight = "bold";
+		title.style.marginBottom = "8px";
+		title.style.color = "var(--text-error)";
+		
+		// Create scrollable text area for the log
+		const logArea = errorDisplay.createEl("pre", { 
+			text: allMessages,
+			cls: "tikz-log-area"
+		});
+		logArea.style.maxHeight = "200px";
+		logArea.style.overflow = "auto";
+		logArea.style.background = "var(--background-primary-alt)";
+		logArea.style.color = "var(--text-normal)";
+		logArea.style.border = "1px solid var(--background-modifier-border)";
+		logArea.style.padding = "8px";
+		logArea.style.borderRadius = "4px";
+		logArea.style.fontSize = "12px";
+		logArea.style.marginTop = "8px";
+		logArea.style.whiteSpace = "pre";
+		logArea.style.fontFamily = "var(--font-monospace)";
+		logArea.style.overflowWrap = "normal";
+		logArea.style.userSelect = "text"; // Allow text selection for copying
+		
+		// Clear the buffer
+		this.tikzLogBuffer = [];
+	}
+
+	clearLogBuffer() {
+		// Clear the log buffer and cancel any pending timer
+		this.tikzLogBuffer = [];
+		if (this.tikzLogTimer) {
+			clearTimeout(this.tikzLogTimer);
+			this.tikzLogTimer = null;
+		}
+	}
+
 }
