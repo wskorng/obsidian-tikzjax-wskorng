@@ -26,11 +26,12 @@ Content inside of `tikz` code blocks will be rendered by TikZJax.
 - The standalone document class is used (`\documentclass{standalone}`).
 
 ### Preamble Support
-You can create a `tikz-preamble.tex` file to define common packages and commands that will be automatically included in all TikZ diagrams. The plugin searches for this file in the following locations (in order):
+You can create a `tikz-preamble.tex` file to define common packages and commands that will be automatically included in all TikZ diagrams. The plugin searches for this file starting from your current note's directory and walking up the directory tree to the vault root, using the **first file found**.
 
-1. Same directory as your current note
-2. Parent directories (walking up the directory tree)
-3. Vault root directory
+This allows you to:
+- **Simplify TikZ code blocks** by moving common setup to the preamble
+- **Organize by topic** using different preambles in different folders
+- **Inherit settings** from parent directories when no local preamble exists
 
 **Example `tikz-preamble.tex`:**
 ```latex
@@ -55,12 +56,13 @@ With this preamble file, you can write simpler TikZ code blocks:
 ```
 ````
 
-### Enhanced Error Reporting
-When TikZ compilation fails, the plugin displays intelligent error messages that filter out noise and focus on the actual problems:
+### Error Reporting
+When TikZ compilation fails, the plugin now displays detailed error messages directly below the code block. The error display intelligently filters LaTeX output to show only relevant information:
 
-- **Preamble errors** (before `\begin{document}`): Shows package conflicts, command redefinitions, etc.
-- **Document errors** (after `\begin{document}`): Shows syntax errors, missing brackets, undefined commands, etc.
-- **Filtered output**: Automatically hides normal library loading messages and shows only relevant error information.
+- **Preamble errors** (before `\begin{document}`): Package conflicts, command redefinitions, etc.
+- **Document errors** (after `\begin{document}`): Syntax errors, missing brackets, undefined commands, etc.
+- **Smart filtering**: Automatically hides normal library loading messages and focuses on actual problems
+- **Inline display**: Errors appear directly in your note, making debugging much easier
 
 
 ### Examples
