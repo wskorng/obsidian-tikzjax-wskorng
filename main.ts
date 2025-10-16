@@ -369,7 +369,10 @@ export default class TikzjaxPlugin extends Plugin {
 				const isNormalDocument = (
 					/^No file input\.aux\./.test(trimmed) ||
 					/^ABD:/.test(trimmed) ||
-					/^\("input\.aux"\)/.test(trimmed)
+					/^\("input\.aux"\)/.test(trimmed) ||
+					/^\(input\.aux\)/.test(trimmed) ||
+					/^Output written on input\.dvi/.test(trimmed) ||
+					/^Transcript written on input\.log/.test(trimmed)
 				);
 				if (isNormalDocument) {
 					continue;
